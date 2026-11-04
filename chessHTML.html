@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<!-- Every HTML file starts with this "doctype" declaration — it just tells
+     the browser "render this as modern HTML", nothing chess-specific. -->
+<html lang="en">
+<head>
+  <!-- <meta charset> tells the browser this file is UTF-8 text, so special
+       characters (like the chess piece symbols ♙♟ used later) display correctly. -->
+  <meta charset="utf-8" />
+  <!-- This viewport tag is what makes the page usable on phones — without it,
+       mobile browsers zoom out and shrink everything to "desktop size". -->
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- The text in <title> shows up in the browser tab. -->
+  <title>Chess — You vs Computer</title>
+  <style>
+    /* :root defines CSS "custom properties" (variables), written as --name.
+       They're referenced elsewhere with var(--name). Centralizing the
+       colors here means changing the theme is a one-place edit. */
+    :root {
+      --light: #eeeed2;                     /* light square color */
+      --dark: #769656;                      /* dark square color */
+      --sel: #f6f669;                       /* highlight for the currently selected piece */
+      --move-dot: rgba(0,0,0,0.22);         /* small dot marking an empty legal-move square */
+      --cap-ring: rgba(0,0,0,0.30);         /* ring marking a legal CAPTURE square */
+      --last: rgba(246, 246, 105, 0.55);    /* highlight for the most recently played move */
+      --check: #e56b6f;                     /* red glow on a king that's in check */
+    }
+    /* The universal selector `*` applies to every element. box-sizing:
+       border-box makes width/height include padding+border, which avoids
+       a lot of "why is this 2px too wide" surprises later in the file. */
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;                 /* remove the browser's default page margin */
+      min-height: 100vh;         /* at least the full height of the browser viewport */
+      display: flex;             /* flexbox layout: lets us stack + center children easily */
+      flex-direction: column;    /* stack children top-to-bottom instead of side-by-side */
+      align-items: center;       /* center children horizontally */
+      justify-content: center;   /* center children vertically */
+      gap: 16px;                 /* even spacing between each direct child */
+      font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; /* fallback font list */
+      background: #302e2b;       /* dark page background, so the wooden-green board pops */
+      color: #eaeaea;            /* default (light) text color */
+      padding: 20px;             /* breathing room on small screens */
+    }
+    h1 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: .3px; }
+
+    /* #status is the "Your move." / "Checkmate!" text line. The 4 rules
+       below it (#status.think / .win / .lose / .draw) are extra classes
+       the JavaScript adds/removes to recolor that same line depending on
+       what's happening — see setStatus() further down in this file. */
+    #status {
+      font-size: 16px;
+      min-height: 22px;    /* reserve space so the layout doesn't jump when text appears */
+      text-align: center;
+      color: #d7d7d7;
+    }
+    #status.think { color: #f0c674; } /* amber while the computer is "thinking" */
+    #status.win   { color: #8bd450; font-weight: 700; } /* green when you win */
+    #status.lose  { color: #e56b6f; font-weight: 700; } /* red when the computer wins */
+    #status.draw  { color: #d7d7d7; font-weight: 700; } /* neutral gray for a draw */
+
+    #board {
+      display: grid;                              /* CSS grid: a real rows/columns layout */
+      grid-template-columns: repeat(8, 1fr);       /* 8 equal-width columns */
+      grid-template-rows: repeat(8, 1fr);          /* 8 equal-height rows */
+      width: min(88vw, 560px);                     /* responsive: shrink on small screens, cap at 560px */
+      height: min(88vw, 560px);                    /* same value as width keeps the board perfectly square */
+      border: 4px solid #3a3a35;
+      border-radius: 6px;
+      overflow: hidden;                            /* clips square corners to the rounded border */
+      box-shadow: 0 10px 30px rgba(0,0,0,.4);       /* subtle drop shadow under the board */
+      touch-action: manipulation;                  /* tells mobile browsers "this is tap-only, no double-tap-zoom" */
+      user-select: none;                           /* stops squares/pieces from being highlighted like text on click */
+    }
+    /* .sq is applied to EVERY square div (there will be 64 of them, built
+       by JavaScript further down). */
+    .sq {
+      position: relative;      /* lets us absolutely-position highlight overlays INSIDE each square */
+      display: flex;
+      align-items: center;
+      justify-content: center; /* centers the piece glyph in the square */
+      font-size: clamp(26px, 8vw, 52px); /* clamp(min, preferred, max): scales with screen width, within bounds */
+      line-height: 1;
+      cursor: pointer;         /* shows a "clickable hand" cursor over every square */
+    }
+    .sq.light { background: var(--light); }
+    .sq.dark  { background: var(--dark); }
+
+    /* These use the ::after pseudo-element to draw a colored overlay on
+       TOP of a square without needing an extra HTML element for it.
+       `inset: 0` is shorthand for "top/right/bottom/left: 0", i.e. "fill
+       the whole parent". pointer-events: none lets clicks pass through
+       the overlay to the square underneath it. */
+    .sq.sel::after {
+      content: ""; position: absolute; inset: 0;
+      background: var(--sel); opacity: .55; pointer-events: none;
+    }
+    .sq.last::after {
+      content: ""; position: absolute; inset: 0;
+      background: var(--last); pointer-events: none;
+    }
+    /* !important forces this background to win over the .light/.dark
+       rules above, since a square can be BOTH e.g. "dark" and "in check". */
+    .sq.check {
+      background: radial-gradient(circle, var(--check) 0%, var(--check) 40%, transparent 75%) !important;
+    }
+
+    .piece {
+      position: relative; z-index: 2; /* z-index: 2 keeps the piece glyph drawn above the highlight overlays */
+      will-change: transform;         /* hints the browser to prep this element for smooth transform animation (the piece slide) */
+    }
+    .piece.white { color: #ffffff; text-shadow: 0 1px 1px rgba(0,0,0,.35), 2px 2px 2px rgba(0,0,0,.4); } /* dark outline so white pieces read clearly on light squares */
+    .piece.black { color: #202020; text-shadow: 0 1px 1px rgba(255,255,255,.15); }
+
+    /* The little dot marking an empty square you're allowed to move to. */
+    .dot {
+      position: absolute; z-index: 1;
+      width: 30%; height: 30%; border-radius: 50%; /* a circle, sized relative to the square */
+      background: var(--move-dot); pointer-events: none;
+    }
+    /* The ring marking an occupied square you're allowed to CAPTURE on
+       (drawn as a ring instead of a filled dot, so you can still see
+       the enemy piece underneath it). */
+    .capture-ring {
+      position: absolute; z-index: 1; inset: 8%;
+      border-radius: 50%;
+      box-shadow: inset 0 0 0 6px var(--cap-ring); /* an INSET shadow draws a ring instead of a solid circle */
+      pointer-events: none;
+    }
+
+    .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: center; }
+    button {
+      background: #4a8c3f; color: #fff; border: none; border-radius: 6px;
+      padding: 8px 16px; font-size: 14px; cursor: pointer; font-weight: 600;
+    }
+    button:hover { background: #57a349; } /* :hover only applies while the mouse is over the button */
+    button.secondary { background: #555; }
+    button.secondary:hover { background: #666; }
+
+    /* The promotion-choice popup (shown when a pawn reaches the far row
+       and you must choose Queen/Rook/Bishop/Knight). It's hidden by
+       default (display: none) and only shown when JS adds the "show" class. */
+    .modal-back {
+      position: fixed; inset: 0; background: rgba(0,0,0,.55); /* dims the whole page behind the popup */
+      display: none; align-items: center; justify-content: center; z-index: 50;
+    }
+    .modal-back.show { display: flex; } /* JS toggles this class to open/close the popup */
+    .modal {
+      background: #3a3a35; padding: 18px; border-radius: 10px; text-align: center;
+      box-shadow: 0 12px 40px rgba(0,0,0,.5);
+    }
+    .modal h3 { margin: 0 0 12px; font-size: 16px; }
+    .promo-row { display: flex; gap: 8px; } /* holds the 4 promotion-choice buttons side by side */
+    .promo-btn {
+      width: 56px; height: 56px; font-size: 38px; line-height: 1;
+      background: var(--light); color: #202020; border-radius: 6px; border: 2px solid transparent;
+    }
+    .promo-btn:hover { border-color: #4a8c3f; background: #fff; }
+    .hint { font-size: 12px; color: #a9a9a9; max-width: 560px; text-align: center; }
+
+    /* ---- Login screen + account/history UI ---- */
+    /* `:not([hidden])` so toggling the element's `hidden` attribute in JS
+       actually hides it — an id selector like `#gameArea{display:flex}` would
+       otherwise override the browser's default hidden styling. */
+    #loginScreen:not([hidden]) { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+    #gameArea:not([hidden])    { display: flex; flex-direction: column; align-items: center; gap: 16px; }
+    input[type="text"], input[type="password"] {
+      padding: 10px 12px; font-size: 15px; border-radius: 6px; border: 1px solid #555;
+      background: #262523; color: #eee; width: 220px; max-width: 80vw;
+    }
+    #loginMsg { min-height: 20px; font-size: 14px; text-align: center; }
+    #loginMsg.err { color: #e56b6f; }
+    #loginMsg.ok  { color: #8bd450; }
+    #whoami { font-size: 13px; color: #a9a9a9; }
+    #history { width: min(88vw, 560px); font-size: 13px; color: #cfcfcf; }
+    #history h3 { margin: 10px 0 4px; font-size: 14px; color: #ddd; text-align: center; }
+    #history table { width: 100%; border-collapse: collapse; }
+    #history th, #history td { text-align: left; padding: 4px 8px; border-bottom: 1px solid #3a3a35; }
+    #history .empty { text-align: center; color: #888; }
+  </style>
+</head>
+<body>
+    <!-- ===================== LOGIN SCREEN =====================
+         Shown first. After a successful log in / register the script hides
+         this and reveals #gameArea. It talks to the server's /login and
+         /register endpoints, so it only works when the page is opened
+         THROUGH the server (http://…:8000/), not from a file:// path. -->
+    <div id="loginScreen">
+        <h1>♟ Chess — Log in</h1>
+        <input type="text" id="loginName" placeholder="Username" autocomplete="username" maxlength="20" />
+        <input type="password" id="loginPass" placeholder="Password" autocomplete="current-password" />
+        <div class="controls">
+            <button id="loginBtn">Log in</button>
+            <button id="registerBtn" class="secondary">Register</button>
+        </div>
+        <div id="loginMsg"></div>
+        <div class="hint">New here? Choose a username &amp; password and press Register. Both must be unused.</div>
+    </div>
+
+    <!-- ===================== GAME AREA =====================
+         Hidden (the `hidden` attribute) until the player logs in. -->
+    <div id="gameArea" hidden>
+        <!-- "Logged in as …" line, filled in by the script. -->
+        <div id="whoami"></div>
+
+        <!-- Mode chooser. The board is built on page load, so these buttons
+             don't BUILD the game — they START it by calling startGame(...) /
+             startOnline(), which unlock the board, and hide this chooser. -->
+        <div id="modeButtons" class="controls">
+            <button onclick="startGame('comp'); document.getElementById('modeButtons').style.display='none'">Play vs Computer</button>
+            <button onclick="startGame('person'); document.getElementById('modeButtons').style.display='none'">Play vs Person (2 players)</button>
+            <!-- Online mode: joins the Python relay server (startOnline in jschess.js). -->
+            <button onclick="startOnline(); document.getElementById('modeButtons').style.display='none'">Play Online (same network)</button>
+        </div>
+
+        <!-- id="title" so the script can reword the heading per mode. -->
+        <h1 id="title">♟ Chess</h1>
+        <!-- Status line; the script rewrites it after every move. -->
+        <div id="status">Choose a mode above to start.</div>
+        <!-- Filled with 64 square divs by buildBoard() in the script. -->
+        <div id="board"></div>
+        <div class="controls">
+            <button id="newGame">New Game</button>
+            <button id="undo" class="secondary">Undo</button>
+        </div>
+        <!-- id="hint" so the script can tailor this line per mode. -->
+        <div class="hint" id="hint">Click a piece, then click a highlighted square to move.</div>
+
+        <!-- Recent games read from the GAMES database (filled by the script). -->
+        <div id="history"></div>
+    </div>
+
+    <!-- The pawn-promotion popup (fixed overlay; fine to sit outside #gameArea). -->
+    <div class="modal-back" id="promoModal">
+        <div class="modal">
+            <h3>Promote pawn to:</h3>
+            <div class="promo-row" id="promoRow"></div>
+        </div>
+    </div>
+
+    <!-- Load the chess RULES ENGINE first (board logic + the bot's brain).
+         It must come before the inline <script> below, because that script
+         uses `window.Chess`, which this file is what creates. -->
+    <script src="jschess.js"></script>
+    <script>
+        buildmyass();
+    </script>
+</body>
+</html>

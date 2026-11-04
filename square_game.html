@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Square Game</title>
+<style>
+  body {
+    font-family: Arial, sans-serif;
+    background: #1e2a38;
+    color: #fff;
+    text-align: center;
+    margin: 0;
+    padding: 30px 16px;
+  }
+  h1 { margin-top: 0; }
+  .box {
+    background: #2c3e50;
+    border-radius: 12px;
+    max-width: 420px;
+    margin: 20px auto;
+    padding: 20px;
+  }
+  input {
+    font-size: 22px;
+    padding: 8px;
+    width: 160px;
+    border-radius: 6px;
+    border: none;
+    text-align: center;
+  }
+  button {
+    font-size: 20px;
+    padding: 8px 18px;
+    margin-left: 6px;
+    border: none;
+    border-radius: 6px;
+    background: #27ae60;
+    color: #fff;
+    cursor: pointer;
+  }
+  button:hover { background: #2ecc71; }
+  #big {
+    font-size: 64px;
+    font-weight: bold;
+    color: #f1c40f;
+    min-height: 80px;
+    margin: 10px 0;
+    word-break: break-all;
+  }
+  #from { color: #bdc3c7; min-height: 22px; }
+  #status { color: #95a5a6; font-size: 14px; min-height: 18px; margin-top: 10px; }
+  ul { list-style: none; padding: 0; margin: 0; text-align: left; }
+  li { padding: 4px 0; border-bottom: 1px solid #3d566e; }
+  .mine { color: #7fb3d5; }
+</style>
+</head>
+<body>
+  <h1>Square Game</h1>
+  <p>Your name: <b id="myName"></b></p>
+
+  <div class="box">
+    <h2>Send a number</h2>
+    <input type="number" id="numberInput" placeholder="e.g. 7" step="any">
+    <button id="sendBtn">Send</button>
+    <div id="status"></div>
+  </div>
+
+  <div class="box">
+    <h2>From the other player</h2>
+    <div id="big">?</div>
+    <div id="from">Waiting for the other player...</div>
+  </div>
+
+  <div class="box">
+    <h2>History</h2>
+    <ul id="history"></ul>
+  </div>
+
+<script>
+  // Each browser gets its own name so we know which numbers came from the other player
+  let myName = sessionStorage.getItem("squareName");
+  if (!myName) {
+    myName = prompt("Enter your name:") || ("Player" + Math.floor(Math.random() * 1000));
+    sessionStorage.setItem("squareName", myName);
+  }
+  document.getElementById("myName").textContent = myName;
+
+  let lastId = 0;
+  const input = document.getElementById("numberInput");
+  const status = document.getElementById("status");
+
+  async function sendNumber() {
+    if (input.value.trim() === "") return;
+    try {
+      const res = await fetch("/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sender: myName, number: input.value })
+      });
+      const data = await res.json();
+      status.textContent = res.ok ? "Sent " + data.number + "!" : data.error;
+      input.value = "";
+      input.focus();
+    } catch (e) {
+      status.textContent = "Could not reach the server.";
+    }
+  }
+
+  async function checkForMessages() {
+    try {
+      const res = await fetch("/messages?since=" + lastId);
+      const msgs = await res.json();
+      for (const m of msgs) {
+        lastId = m.id;
+        const li = document.createElement("li");
+        if (m.sender === myName) {
+          li.className = "mine";
+          li.textContent = "You sent " + m.number;
+        } else {
+          li.textContent = m.sender + " sent " + m.number + "  →  square = " + m.square;
+          document.getElementById("big").textContent = m.square;
+          document.getElementById("from").textContent = m.sender + " sent " + m.number + " (" + m.number + "² = " + m.square + ")";
+        }
+        document.getElementById("history").prepend(li);
+      }
+    } catch (e) {
+      status.textContent = "Lost connection to the server...";
+    }
+  }
+
+  document.getElementById("sendBtn").addEventListener("click", sendNumber);
+  input.addEventListener("keydown", e => { if (e.key === "Enter") sendNumber(); });
+
+  checkForMessages();
+  setInterval(checkForMessages, 500);  // check for new numbers twice a second
+</script>
+</body>
+</html>

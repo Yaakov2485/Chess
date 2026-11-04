@@ -1,0 +1,10 @@
+# The SQLite database holds user accounts (hashed passwords) and game history.
+# Never commit it — it's data, not code, and it's private.
+chess.db
+chess.db-journal
+chess.db-wal
+chess.db-shm
+
+# Python cache files
+__pycache__/
+*.pyc
