@@ -1439,10 +1439,6 @@ const PST = {
     -10,  5,  0,  0,  0,  0,  5,-10,
     -20,-10,-10,-10,-10,-10,-10,-20
   ],
-  // NOTE: the "100" in the middle of the second row below stands out
-  // compared to every other entry in this table (which are all small,
-  // single/double-digit values). It looks like it was changed outside
-  // this conversation — see the chat message about it. Left as-is here.
   R: [
      0,  0,  0,  0,  0,  0,  0,  0,
      5, 10, 10, 10, 10, 10, 10,  5,
@@ -1489,21 +1485,17 @@ function mirror(i) {
 // the score "from the current player's point of view" (instead of
 // always from White's) is what makes the NEGAMAX search below work —
 // see the comment above `search` for why that trick is convenient.
-function evaluate(state) {
-    let score = 0;    // positive = good for White, negative = good for Black
-  const b = state.board;
-  for (let i = 0; i < 64; i++) {
-    const p = b[i];
-    if (p === '') continue;
-    const t = p.toUpperCase(); // piece type letter, used to look up tables
-    // Look up the base value plus the positional bonus for this exact square.
-    const val = PIECE_VALUE[t] + PST[t][isWhite(p) ? i : mirror(i)];
-    // `+=` adds to score for White pieces, subtracts for Black pieces.
-    score += isWhite(p) ? val : -val;
+function evaluate(state) {                        // give ONE board position a numeric score (no looking ahead)
+    let score = 0;                                // running total: positive = good for White, negative = good for Black
+  const b = state.board;                          // הפניה
+  for (let i = 0; i < 64; i++) {                  // visit every square, index 0 to 63
+    const p = b[i];                               // the piece letter on this square ('' if empty)
+    if (p === '') continue;                       // empty square scores nothing, skip to the next one
+    const t = p.toUpperCase();                    // piece TYPE ('P','N','B','R','Q','K'), ignoring its color
+    const val = PIECE_VALUE[t] + PST[t][isWhite(p) ? i : mirror(i)];  // material value + square bonus (mirror the square for Black)
+    score += isWhite(p) ? val : -val;             // White pieces add to the score, Black pieces subtract
   }
-  // Flip the sign for Black so the RETURNED number always means
-  // "how good is this for whoever's turn it currently is".
-  return state.turn === WHITE ? score : -score;
+  return state.turn === WHITE ? score : -score;   // flip the sign so the number is from the side-to-move's point of view
 }
 
 /* ---------- Move ordering (MVV-LVA + promotions) ----------
@@ -1514,18 +1506,18 @@ function evaluate(state) {
    before searching. MVV-LVA = "Most Valuable Victim, Least Valuable
    Attacker": capturing a queen with a pawn is prioritized far above
    capturing a pawn with a queen. */
-function scoreMove(m) {
-  let s = 0;
-  if (m.captured) { // truthy check: '' (no capture) is falsy, any piece letter is truthy
-    s += 10 * PIECE_VALUE[m.captured.toUpperCase()] - PIECE_VALUE[m.piece.toUpperCase()];
+function scoreMove(m) {                             // rough "how promising" score, used ONLY to order moves for speed
+  let s = 0;                                       // every move starts at 0
+  if (m.captured) {                                // did this move capture a piece? ('' = no capture = falsy)
+      s += 10 * PIECE_VALUE[m.captured.toUpperCase()] - PIECE_VALUE[m.piece.toUpperCase()];  // MVV-LVA: victim's value up, attacker's value down
+      //Pawn takes Queen: victim Q=900, attacker P=100 → 10×900 − 100 = 8900
+      //Queen takes Pawn: victim P = 100, attacker Q = 900 → 10×100 − 900 = 100
   }
-  if (m.flag === 'ep') s += 10 * PIECE_VALUE.P - PIECE_VALUE.P; // en passant always captures a pawn
-  if (m.promotion) s += PIECE_VALUE[m.promotion.toUpperCase()]; // promoting is very promising, rank it up
-  return s;
+  if (m.flag === 'ep') s += 10 * PIECE_VALUE.P - PIECE_VALUE.P;  // en passant captures a pawn, score it like any pawn capture
+  if (m.promotion) s += PIECE_VALUE[m.promotion.toUpperCase()];  // a promotion is very promising, push it up the order
+  return s;                                        // higher number = looks better = gets searched earlier
 }
-// A huge number used to represent "checkmate" in the search — bigger
-// than any possible material score, so it always wins/loses the comparison.
-const MATE = 1000000;
+const MATE = 1000000;                              // "checkmate" score: so big it always outweighs any material difference
 
 /* ---------- Negamax with alpha-beta ----------
    This is the "look N moves ahead" brain. It's written as NEGAMAX, a
@@ -1543,18 +1535,18 @@ const MATE = 1000000;
    can stop looking (the `break` near the bottom) without checking the
    rest of the moves here. This is what makes searching 5 moves ahead
    fast enough to run in the browser. */
-function search(state, depth, alpha, beta, ply) {
+function search(state, depth, alpha, beta, ply) {   // look `depth` plies ahead; return the best score for the side to move
   // Base case of the recursion: we've run out of depth, just score the position.
-  if (depth === 0) return evaluate(state);
+  if (depth === 0) return evaluate(state);          // hit the depth limit: stop looking ahead and score the position as-is
 
-  const moves = generateLegalMoves(state);
+  const moves = generateLegalMoves(state);          // every legal move in this position
 
-  if (moves.length === 0) {
+  if (moves.length === 0) {                         // no legal moves at all -> the game ends right here
     // No legal moves means either checkmate or stalemate for whoever's turn it is.
     // `-MATE + ply` makes a mate found SOONER (smaller ply) score as more
     // negative/worse for the side being mated, so the bot prefers faster
     // checkmates over slower ones when it has a choice.
-    if (inCheck(state, state.turn)) return -MATE + ply;
+    if (inCheck(state, state.turn)) return -MATE + ply;  // in check + no moves = checkmate (a loss); +ply makes faster mates score better
     return 0; // stalemate = a draw = neutral score
   }
 
@@ -1563,20 +1555,35 @@ function search(state, depth, alpha, beta, ply) {
   // `.sort((a, b) => scoreMove(b) - scoreMove(a))` — the callback returns
   // a negative number when b's score is bigger than a's, which tells
   // .sort() to place b before a, i.e. DESCENDING order (best first).
-  moves.sort((a, b) => scoreMove(b) - scoreMove(a));
+  moves.sort((a, b) => scoreMove(b) - scoreMove(a));  // put the strongest-looking moves first so the prune fires early
 
   let best = -Infinity; // JS has a built-in Infinity value; -Infinity loses to any real score
-  for (const m of moves) {
-    const undo = makeMove(state, m);
+  for (const m of moves) {                          // try each candidate move in turn
+    const undo = makeMove(state, m);                // play it on the board; keep an `undo` record to reverse it later
     // Recurse one ply deeper, from the OPPONENT's point of view. We
     // negate their best score (what's good for them is bad for us) and
     // swap+negate alpha/beta because the roles of "our best" and
     // "their best" flip at every level.
     const val = -search(state, depth - 1, -beta, -alpha, ply + 1);
     unmakeMove(state, undo); // always undo, whether or not we keep this move
+
+    // --- ALPHA-BETA PRUNING happens in these three lines ---
+    // 1. Remember the best score we've found at this node so far.
     if (val > best) best = val;
+    // 2. alpha = "the best score I've already GUARANTEED myself". Raise it
+    //    whenever a move beats it.
     if (best > alpha) alpha = best;
-    if (alpha >= beta) break; // beta cutoff: opponent already has a better option elsewhere, stop searching
+    // 3. THE PRUNE. beta = "the best the opponent will allow me" (handed down
+    //    from the parent). If our best has reached or passed that ceiling, we've
+    //    found a move so good the opponent would never let us reach this
+    //    position — they'd choose their better option higher up the tree. So
+    //    there's no point checking the moves still left in `moves`: `break`
+    //    exits the loop early and SKIPS them, along with the entire deep subtree
+    //    of replies under each one. That skipped work is what pruning saves.
+    //    (It gives the SAME answer as checking them all — just far faster. And
+    //    because we sorted best-move-first above, this usually fires early, so
+    //    most of the list gets skipped.)
+    if (alpha >= beta) break; // beta cutoff
   }
   return best;
 }
@@ -1587,34 +1594,29 @@ function search(state, depth, alpha, beta, ply) {
    inside `search`, but here we also remember WHICH move produced the
    best score, instead of only the score itself — because this is the
    move we're actually going to play. */
-function findBestMove(state, depth) {
-  const moves = generateLegalMoves(state);
+function findBestMove(state, depth) {               // the ROOT search: returns the actual MOVE to play (not just a score)
+  const moves = generateLegalMoves(state);          // every legal move for the side to move
   if (moves.length === 0) return null; // no legal moves = game already over
 
-  moves.sort((a, b) => scoreMove(b) - scoreMove(a));
-
-  let best = -Infinity;
+  let best = -Infinity;                             // best score found so far (any real move beats -Infinity)
   let bestMoves = []; // collect ALL moves that tie for the best score
-  let alpha = -Infinity;
+  let alpha = -Infinity;                            // best score we've secured so far (climbs as we find good moves)
   const beta = Infinity; // beta never changes at the root, so it can be `const`
     //“alpha = best I’ve secured so far (starts -∞, nothing secured); beta = best the opponent will allow me (starts +∞, no limit yet). The window starts wide open and tightens as we learn.”
-  for (const m of moves) {
-    const undo = makeMove(state, m);
-    const val = -search(state, depth - 1, -beta, -alpha, 1);
-    unmakeMove(state, undo);
-    if (val > best) {
-      best = val;
+  for (const m of moves) {                          // try each candidate move in turn
+    const undo = makeMove(state, m);                // play it on the board; keep an `undo` record to reverse it
+    const val = -search(state, depth - 1, -beta, -alpha, 1);  // score it by searching the opponent's replies (negated: child is from their view)
+    unmakeMove(state, undo);                         // undo the move, board back to how it was
+    if (val > best) {                               // is this move strictly BETTER than anything seen so far?
+      best = val;                                   // yes: record its score as the new best
       bestMoves = [m]; // strictly better move found: start a fresh list with just this one
-    } else if (val === best) {
+    } else if (val === best) {                      // else, is it exactly TIED with the current best?
       bestMoves.push(m); // exactly tied with the best: keep it as an option too
     }
-    if (best > alpha) alpha = best;
+    if (best > alpha) alpha = best;                 // raise alpha so the deeper searches can prune against our best
   }
-  // Randomly pick among any equally-best moves, so the bot doesn't always
-  // play the exact same line in identical positions.
-  // `Math.random()` gives a decimal between 0 (inclusive) and 1 (exclusive);
-  // multiplying by the array length and flooring picks a random valid index.
-  return bestMoves[Math.floor(Math.random() * bestMoves.length)];
+  // Randomly pick among any equally-best moves, so the bot doesn't always play the same line in identical positions.
+  return bestMoves[Math.floor(Math.random() * bestMoves.length)];  // hand back one of the tied-best moves, chosen at random
 }
 
 /* Figure out the overall game state in plain words, for the UI to display. */
