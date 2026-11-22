@@ -61,6 +61,13 @@ DB_PATH = os.environ.get('CHESS_DB', os.path.join(SCRIPT_DIR, 'chess.db'))
 # through the PORT environment variable; locally we fall back to 8000.
 PORT = int(os.environ.get('PORT', '8000'))
 
+# The built-in Host / admin account (it can see every user). The defaults make
+# it work out of the box, but you can override them with environment variables —
+# RECOMMENDED on a public repo so the real password isn't visible in the code:
+# set ADMIN_NAME and ADMIN_PASSWORD in your host's (Render's) settings.
+ADMIN_NAME = os.environ.get('ADMIN_NAME', 'Jacob')
+ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'yaakov2009')
+
 # ---------------------------------------------------------------
 #  DATABASES (SQLite) — two tables in one file: users + games
 # ---------------------------------------------------------------
@@ -72,18 +79,25 @@ db_lock = threading.Lock()
 
 def init_db():
     """Create the two tables the first time the server runs (safe to call
-    every start thanks to IF NOT EXISTS)."""
+    every start thanks to IF NOT EXISTS), then make sure the admin exists."""
     with sqlite3.connect(DB_PATH) as conn:
         # TABLE 1 — users. `UNIQUE` on both name and password_hash is what the
         # database itself uses to forbid duplicates, on top of our own checks.
+        # is_admin is 1 for the Host account, 0 for every normal user.
         conn.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
                 name          TEXT UNIQUE NOT NULL,
                 password_hash TEXT UNIQUE NOT NULL,
-                created_at    TEXT NOT NULL
+                created_at    TEXT NOT NULL,
+                is_admin      INTEGER NOT NULL DEFAULT 0
             )
         ''')
+        # Migration: a database created BEFORE the admin feature won't have the
+        # is_admin column yet. Add it if it's missing, so existing data still works.
+        cols = [r[1] for r in conn.execute('PRAGMA table_info(users)').fetchall()]
+        if 'is_admin' not in cols:
+            conn.execute('ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0')
         # TABLE 2 — games. One row per finished game.
         conn.execute('''
             CREATE TABLE IF NOT EXISTS games (
@@ -96,6 +110,30 @@ def init_db():
             )
         ''')
         conn.commit()
+    ensure_admin()
+
+
+def ensure_admin():
+    """Make sure the Host/admin account exists and is flagged as an admin.
+    Runs on every startup; creates the account the first time."""
+    pwh = hash_password(ADMIN_PASSWORD)
+    now = datetime.now().strftime('%Y-%m-%d %H:%M')
+    with db_lock, sqlite3.connect(DB_PATH) as conn:
+        try:
+            row = conn.execute('SELECT id FROM users WHERE name = ?', (ADMIN_NAME,)).fetchone()
+            if row:
+                # Already there — just make sure it is marked as an admin.
+                conn.execute('UPDATE users SET is_admin = 1 WHERE name = ?', (ADMIN_NAME,))
+            else:
+                conn.execute(
+                    'INSERT INTO users (name, password_hash, created_at, is_admin) VALUES (?, ?, ?, 1)',
+                    (ADMIN_NAME, pwh, now)
+                )
+            conn.commit()
+        except sqlite3.IntegrityError:
+            # Rare: the admin password is already used by another account, so the
+            # UNIQUE(password_hash) rule blocks the insert. The seed is skipped.
+            pass
 
 
 def hash_password(pw):
@@ -180,12 +218,13 @@ class Handler(SimpleHTTPRequestHandler):
     # ---- POST: all our "write" endpoints -------------------------
     def do_POST(self):
         route = {
-            '/register': self.handle_register,
-            '/login':    self.handle_login,
-            '/join':     self.handle_join,
-            '/move':     self.handle_move,
-            '/reset':    self.handle_reset,
-            '/gameover': self.handle_gameover,
+            '/register':    self.handle_register,
+            '/login':       self.handle_login,
+            '/admin/users': self.handle_admin_users,
+            '/join':        self.handle_join,
+            '/move':        self.handle_move,
+            '/reset':       self.handle_reset,
+            '/gameover':    self.handle_gameover,
         }.get(self.path)
         if route:
             route()
@@ -228,13 +267,46 @@ class Handler(SimpleHTTPRequestHandler):
         pwh = hash_password(password)
         with db_lock, sqlite3.connect(DB_PATH) as conn:
             row = conn.execute(
-                'SELECT name FROM users WHERE name = ? AND password_hash = ?',
+                'SELECT name, is_admin FROM users WHERE name = ? AND password_hash = ?',
                 (name, pwh)
             ).fetchone()
         if row:
-            self.send_json({'ok': True, 'name': row[0]})
+            # isAdmin tells the browser whether to show the admin panel.
+            self.send_json({'ok': True, 'name': row[0], 'isAdmin': bool(row[1])})
         else:
             self.send_json({'ok': False, 'error': 'Wrong username or password.'})
+
+    # ---- admin: the Host account can list every user -------------
+    def handle_admin_users(self):
+        """Return the list of all users, but ONLY to a verified admin. The
+        caller must send the admin's own name + password to prove who they are."""
+        data = self.read_json()
+        name = (data.get('name') or '').strip()
+        password = data.get('password') or ''
+        pwh = hash_password(password)
+        with db_lock, sqlite3.connect(DB_PATH) as conn:
+            # Verify the requester really is an admin before handing over anything.
+            me = conn.execute(
+                'SELECT is_admin FROM users WHERE name = ? AND password_hash = ?',
+                (name, pwh)
+            ).fetchone()
+            if not me or not me[0]:
+                self.send_json({'ok': False, 'error': 'Admins only.'}, status=403)
+                return
+            rows = conn.execute(
+                'SELECT name, created_at, is_admin FROM users ORDER BY is_admin DESC, id ASC'
+            ).fetchall()
+            users = []
+            for r in rows:
+                uname = r[0]
+                games = conn.execute(
+                    'SELECT COUNT(*) FROM games WHERE white = ? OR black = ?', (uname, uname)
+                ).fetchone()[0]
+                # Note: we send the username and stats, NOT the password — we only
+                # store a one-way hash of it, so the real password can't be shown.
+                users.append({'name': uname, 'createdAt': r[1],
+                              'isAdmin': bool(r[2]), 'games': games})
+        self.send_json({'ok': True, 'users': users})
 
     # ---- online game relay ---------------------------------------
     def handle_join(self):

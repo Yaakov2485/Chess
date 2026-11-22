@@ -171,11 +171,13 @@
     #loginMsg.err { color: #e56b6f; }
     #loginMsg.ok  { color: #8bd450; }
     #whoami { font-size: 13px; color: #a9a9a9; }
-    #history { width: min(88vw, 560px); font-size: 13px; color: #cfcfcf; }
-    #history h3 { margin: 10px 0 4px; font-size: 14px; color: #ddd; text-align: center; }
-    #history table { width: 100%; border-collapse: collapse; }
-    #history th, #history td { text-align: left; padding: 4px 8px; border-bottom: 1px solid #3a3a35; }
+    #history, #adminPanel { width: min(88vw, 560px); font-size: 13px; color: #cfcfcf; }
+    #history h3, #adminPanel h3 { margin: 10px 0 4px; font-size: 14px; color: #ddd; text-align: center; }
+    #history table, #adminPanel table { width: 100%; border-collapse: collapse; }
+    #history th, #history td,
+    #adminPanel th, #adminPanel td { text-align: left; padding: 4px 8px; border-bottom: 1px solid #3a3a35; }
     #history .empty { text-align: center; color: #888; }
+    #adminPanel h3 { color: #f0c674; } /* amber heading so the Host view stands out */
   </style>
 </head>
 <body>
@@ -227,6 +229,10 @@
 
         <!-- Recent games read from the GAMES database (filled by the script). -->
         <div id="history"></div>
+
+        <!-- Host-only panel listing every user. Hidden for normal players; the
+             script reveals and fills it only when an admin logs in. -->
+        <div id="adminPanel" hidden></div>
     </div>
 
     <!-- The pawn-promotion popup (fixed overlay; fine to sit outside #gameArea). -->

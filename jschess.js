@@ -193,6 +193,8 @@ function buildmyass() {
 
         // --- Account + history state ---
         let loggedInName = null;     // the username this browser logged in as
+        let sessionPassword = null;  // kept in memory only, so the admin can re-prove identity to /admin/users
+        let isAdmin = false;         // true when the logged-in account is the Host/admin
         let onlineWhiteName = null;  // display names of the two players in the current online game
         let onlineBlackName = null;
         let reportedThisGame = false;// have we already saved THIS finished game to the history DB?
@@ -814,6 +816,7 @@ function buildmyass() {
         const loginMsg    = document.getElementById('loginMsg');
         const whoamiEl    = document.getElementById('whoami');
         const historyEl   = document.getElementById('history');
+        const adminEl     = document.getElementById('adminPanel'); // Host-only list of all users
 
         function showLoginMsg(text, cls) {
             loginMsg.textContent = text;
@@ -839,19 +842,23 @@ function buildmyass() {
                 showLoginMsg('Could not reach the server. Open the page via the server URL (http://…:8000/).', 'err');
                 return;
             }
-            if (data.ok) afterLogin(data.name);
+            if (data.ok) afterLogin(data.name, data.isAdmin, password);
             else showLoginMsg(data.error || 'Something went wrong.', 'err');
         }
 
-        // After a successful login: remember the name, swap the login screen for
-        // the game, and show the recent-games list.
-        function afterLogin(name) {
+        // After a successful login: remember who we are, swap the login screen
+        // for the game, show recent games, and (for the Host) the user list.
+        function afterLogin(name, admin, password) {
             loggedInName = name;
+            sessionPassword = password;   // kept in memory to re-auth the admin call
+            isAdmin = !!admin;
             try { localStorage.setItem('chessLastUser', name); } catch (e) {}
-            whoamiEl.textContent = 'Logged in as ' + name;
+            whoamiEl.textContent = 'Logged in as ' + name + (isAdmin ? '  (Host / admin)' : '');
             loginScreen.hidden = true;  // hide the login screen...
             gameArea.hidden = false;    // ...and reveal the game
             renderHistory();            // show recent games
+            if (isAdmin) renderAdminUsers();        // Host also sees every user
+            else if (adminEl) adminEl.hidden = true; // normal users never see the panel
         }
 
         // Fetch recent games from the server (the GAMES table) and draw them as a
@@ -885,6 +892,34 @@ function buildmyass() {
         function esc(s) {
             return String(s == null ? '' : s)
                 .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+
+        // ADMIN ONLY: fetch every user from the server and show them in a table.
+        // We re-send the admin's name + password so the server can confirm that
+        // it really is the Host making the request (there are no login tokens).
+        async function renderAdminUsers() {
+            if (!adminEl) return;
+            let data;
+            try {
+                const res = await fetch('/admin/users', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: loggedInName, password: sessionPassword })
+                });
+                data = await res.json();
+            } catch (e) { return; }
+            if (!data.ok) { adminEl.hidden = true; return; } // server refused (not an admin)
+            let rows = '';
+            for (const u of data.users) {
+                rows += '<tr><td>' + esc(u.name) + '</td><td>' + (u.isAdmin ? 'Host' : 'player') +
+                        '</td><td>' + esc(u.createdAt) + '</td><td>' + u.games + '</td></tr>';
+            }
+            adminEl.innerHTML =
+                '<h3>All users (' + data.users.length + ') — Host view</h3>' +
+                '<table><tr><th>Username</th><th>Role</th><th>Registered</th><th>Games</th></tr>' +
+                rows + '</table>' +
+                '<div class="hint">Passwords aren’t shown — they’re stored only as one-way hashes, so the real text can’t be recovered.</div>';
+            adminEl.hidden = false;
         }
 
         // Wire the login screen's buttons + the Enter key.
